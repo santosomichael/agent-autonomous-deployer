@@ -1,0 +1,8 @@
+name: python_environment
+description: Create an isolated research Python environment.
+commands:
+  - mkdir -p {{ workspace }} && python3 -m venv {{ workspace }}/.venv
+  - "{{ workspace }}/.venv/bin/python -m pip install --upgrade pip setuptools wheel"
+verify:
+  - >-
+    {{ workspace }}/.venv/bin/python -c "import sys; print(sys.version)"

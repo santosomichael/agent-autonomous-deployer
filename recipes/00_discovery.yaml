@@ -1,0 +1,9 @@
+name: discovery
+description: Capture target OS, hardware, disk, memory, GPU and driver facts.
+timeout_seconds: 120
+commands:
+  - "mkdir -p {{ workspace }}/.research-claw"
+  - "uname -a && cat /etc/os-release && lscpu && free -h && df -h"
+  - "command -v nvidia-smi >/dev/null && nvidia-smi || true"
+verify:
+  - "test -r /etc/os-release"

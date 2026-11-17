@@ -1,0 +1,11 @@
+name: base_linux
+description: Install stable Ubuntu host prerequisites.
+timeout_seconds: 1800
+precheck:
+  - >-
+    . /etc/os-release && test "$ID" = ubuntu
+commands:
+  - sudo -n apt-get update
+  - sudo -n DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl git jq build-essential python3 python3-venv python3-pip
+verify:
+  - command -v git && command -v curl && python3 --version
