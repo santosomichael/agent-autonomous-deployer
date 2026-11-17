@@ -1,8 +1,4 @@
 name: gpu_validation
-description: Require a working NVIDIA driver before GPU packages.
-precheck:
-  - "command -v nvidia-smi"
-commands:
-  - "nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv"
+description: Validate NVIDIA driver and GPU.
 verify:
-  - "nvidia-smi -L | grep -q GPU"
+  - nvidia-smi -L | grep -q GPU

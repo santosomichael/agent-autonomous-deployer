@@ -1,8 +1,7 @@
 name: pytorch
-description: Install PyTorch, then verify CUDA visibility.
+description: Install PyTorch and validate CUDA.
 timeout_seconds: 1800
 commands:
-  - "{{ workspace }}/.venv/bin/pip install torch torchvision torchaudio"
+  - '{{ workspace }}/.venv/bin/pip install torch torchvision torchaudio'
 verify:
-  - >-
-    {{ workspace }}/.venv/bin/python -c "import torch; print(torch.__version__); assert torch.cuda.is_available(), 'PyTorch cannot see CUDA'; print(torch.cuda.get_device_name(0))"
+  - '{{ workspace }}/.venv/bin/python -c "import torch; assert torch.cuda.is_available(); print(torch.cuda.get_device_name(0))"'

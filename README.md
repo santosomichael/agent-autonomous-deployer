@@ -1,67 +1,50 @@
-# Research Claw
+# Research Claw One-Click Deployer
 
-Portable autonomous SSH deployer for an OpenClaw controller, a remote Ollama GPU inference server, and Linux target machines.
+This version performs controller setup, SSH-key creation, host trust, public-key installation, restricted sudo setup, preflight checks, and deployment from one wizard.
 
-## Safety model
+## Start
 
-- Recipes, not the LLM, contain executable installation commands.
-- Every remote command, output, duration, and exit code is logged.
-- The CLI tests SSH and Ollama before deployment.
-- Destructive shell patterns are blocked unless explicitly enabled.
-- `sudo -n` is checked before autonomous installation. Configure narrowly scoped passwordless sudo on the target.
-- Secrets and private keys are never stored in this repository.
-
-## Quick start
+On the i7 WSL/Linux controller:
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e .
-cp inventory/examples/ubuntu-nvidia.yaml inventory/my-lab.yaml
-research-claw init inventory/my-lab.yaml
-research-claw preflight inventory/my-lab.yaml
-research-claw deploy inventory/my-lab.yaml
+cd ~/agent-autonomous-deployer
+./run.sh
 ```
 
-Running `research-claw` with no subcommand starts the interactive checklist wizard.
+That is the only command required. `run.sh` creates/activates `.venv`, installs the CLI, and opens the wizard. On the first run, answer the prompts for the target and Ollama server. The target password may be requested up to twice: once to install the SSH public key and once to create `/etc/sudoers.d/research-claw`. Passwords are not stored.
 
-## What the wizard checks
+The wizard then checks:
 
-1. Inventory parses correctly.
-2. SSH key exists and has safe permissions.
-3. Target resolves and TCP port 22 is reachable.
-4. Host key is already trusted, unless `accept_new_host_key: true` is configured.
-5. Non-interactive SSH works.
-6. Target OS, architecture, disk, RAM, GPU and NVIDIA driver can be discovered.
-7. `sudo -n true` succeeds when selected recipes require root.
-8. Ollama `/api/tags` is reachable on the RTX server.
-9. The configured planning model is present.
-10. Recipes are resolved and shown before execution.
+- SSH key and target TCP connection
+- Non-interactive SSH
+- NVIDIA GPU and driver
+- restricted passwordless sudo for `apt-get`, `systemctl`, `usermod`, and `docker`
+- Ollama API and selected model
 
-## Commands
+If all checks pass, type `DEPLOY`. It installs Ubuntu prerequisites, Python environment, Docker, PyTorch, and Sionna, then verifies the result.
+
+## Later runs
 
 ```bash
-research-claw                 # interactive wizard
-research-claw init FILE       # create/edit inventory interactively
-research-claw preflight FILE  # connection checks only
-research-claw plan FILE       # show exact phases and commands
-research-claw deploy FILE     # preflight, confirmation, execute, verify
-research-claw resume FILE     # continue after the last completed phase
-research-claw status FILE
+./run.sh
 ```
 
-Use `--yes` with `deploy` only after you trust the inventory and recipes. The first deployment should be attended.
+Choose the existing inventory. No manual environment activation is required because `run.sh` handles it.
 
-## OpenClaw integration
+## Output
 
-Point an OpenClaw shell-capable agent at this repository and instruct it to run only:
+- `logs/PROJECT.jsonl`: every command, output, duration, and exit code
+- `state/PROJECT.json`: completed and failed phases
+- `reports/PROJECT.md`: final status
 
-```bash
-research-claw deploy inventory/my-lab.yaml --yes
-```
+## Important constraints
 
-The agent prompt in `agents/coordinator.md` forbids inventing shell commands and requires it to use the recipe runner.
+- The default recipes support Ubuntu targets.
+- The target must allow an initial password-based SSH login or an administrator must install your public key.
+- The user must be allowed to use `sudo` during initial setup.
+- Isaac Sim is not included yet. The detected 16 GB RAM and about 111 GB free disk are tight; use at least 32 GB RAM and preferably 150–250 GB free disk before adding a pinned Isaac Sim recipe.
+- If an organization blocks password login or sudoers changes, an administrator must perform those two bootstrap actions. No program can bypass that policy safely.
 
-## Important scope
+## If the wizard stops
 
-The included recipes provide a functioning base, Python virtual environment, Docker, GPU validation, PyTorch, Sionna and final verification. Isaac Sim is represented by a guarded placeholder because its installation method, license acceptance, release, and container registry credentials vary. Pin and review an Isaac Sim recipe before enabling it. Omniverse Launcher is not treated as a current Linux server dependency; use NVIDIA's supported Isaac Sim distribution for your selected version.
+Read the displayed error and the latest record in `logs/`. Fix only the external blocker, then run `./run.sh` again. Typical blockers are wrong username, VPN/firewall, disabled password login, no sudo rights, unsupported non-Ubuntu OS, package-manager locks, insufficient disk, or incompatible GPU packages.

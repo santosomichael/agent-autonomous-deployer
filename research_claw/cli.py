@@ -1,59 +1,78 @@
-import argparse, sys, shutil
+import sys,os,subprocess,json,shlex,stat
 from pathlib import Path
-from .config import load_inventory, repo_root
-from .preflight import run_checks
-from .runner import Runner
-
-GREEN='\033[32m'; RED='\033[31m'; CYAN='\033[36m'; RESET='\033[0m'
-def c(text,color): return color+text+RESET if sys.stdout.isatty() else text
-def show_checks(checks):
-    for x in checks: print(f" [{'x' if x['ok'] else ' '}] {x['name']}: {x['detail']}")
-    return all(x['ok'] for x in checks)
-def choose_inventory():
-    default='inventory/target.yaml'; value=input(f'Inventory path [{default}]: ').strip() or default; return value
-def wizard():
-    print(c('Research Claw autonomous deployer',CYAN)); print('Preflight first. No target command runs until every required connection check passes.\n')
-    path=choose_inventory()
-    if not Path(path).exists():
-        src=repo_root()/'inventory/examples/ubuntu-nvidia.yaml'; Path(path).parent.mkdir(parents=True,exist_ok=True); shutil.copy2(src,path); print(f'Created {path}. Edit host, user, key, Ollama URL, and model; then run again.'); return 0
-    return command_preflight(path,deploy_prompt=True)
-def command_preflight(path,deploy_prompt=False):
-    _,cfg=load_inventory(path); checks=run_checks(cfg); ok=show_checks(checks)
-    if not ok: print(c('\nPreflight failed. Deployment was not started.',RED)); return 2
-    print(c('\nAll preflight checks passed.',GREEN))
-    if deploy_prompt:
-        r=Runner(path,cfg); show_plan(r)
-        if input('\nStart autonomous deployment? Type DEPLOY: ').strip()=='DEPLOY': return do_deploy(path,False,True)
-    return 0
-def show_plan(r):
-    print('\nDeployment checklist:')
-    for i,x in enumerate(r.recipes(),1): print(f" [ ] {i:02d}. {x['name']} - {x.get('description','')}")
-def do_deploy(path,resume,yes):
-    _,cfg=load_inventory(path); checks=run_checks(cfg)
-    if not all(x['ok'] for x in checks): show_checks(checks); print(c('Deployment blocked by preflight.',RED)); return 2
-    r=Runner(path,cfg); show_plan(r)
-    if not yes and input('Type DEPLOY to continue: ').strip()!='DEPLOY': print('Cancelled.'); return 1
-    ok=r.execute(resume=resume); print(('Completed.' if ok else 'Stopped on failure.')+f'\nLog: {r.log}\nReport: {r.report}\nState: {r.state}'); return 0 if ok else 3
-def init_inventory(path):
-    src=repo_root()/'inventory/examples/ubuntu-nvidia.yaml'; p=Path(path); p.parent.mkdir(parents=True,exist_ok=True)
-    if p.exists(): print(f'{p} already exists'); return 1
-    shutil.copy2(src,p); print(f'Created {p}. Edit it, then run: research-claw preflight {p}'); return 0
+from urllib.request import urlopen
+from .core import *
+INV=ROOT/'inventory/target.yaml'
+def mark(ok,label,detail=''):print(f" [{'x' if ok else ' '}] {label}"+(f": {detail}" if detail else ''))
+def ensure_key(path):
+ p=Path(path).expanduser();
+ if p.exists():return True
+ print('\nNo SSH key found. Creating one now.')
+ p.parent.mkdir(mode=0o700,parents=True,exist_ok=True)
+ return subprocess.run(['ssh-keygen','-t','ed25519','-f',str(p),'-N','','-C','research-claw-controller']).returncode==0
+def make_inventory():
+ print('\nONE-CLICK SETUP\nThe wizard will create the inventory, prepare SSH, check Ollama, configure restricted sudo, then deploy.')
+ host=ask('Target IP or hostname');user=ask('Target Linux username');port=int(ask('SSH port','22'))
+ key=ask('SSH private key','~/.ssh/id_ed25519');ollama=ask('Ollama URL','http://127.0.0.1:11434');model=ask('Ollama model','qwen3:14b')
+ c={'project':ask('Project name','research-lab'),'target':{'host':host,'port':port,'user':user,'identity_file':key,'accept_new_host_key':True,'connect_timeout_seconds':8},'inference':{'base_url':ollama,'model':model,'timeout_seconds':10},'deployment':{'workspace':'~/research-stack','recipes':['00_discovery','10_base_linux','20_python','30_docker','40_gpu_validate','50_pytorch','60_sionna','90_final_verify']}}
+ save(INV,c);return c
+def setup_access(c):
+ t=c['target'];key=Path(t['identity_file']).expanduser()
+ if not ensure_key(key):return False
+ os.chmod(key,0o600)
+ print('\nConnecting once to record the target host key. Verify the fingerprint shown by SSH.')
+ subprocess.run(ssh_base(t,batch=False)+['exit'])
+ r=remote(t,"printf '%s' READY")
+ if r['exit_code']!=0:
+  print('\nPublic-key login is not ready. The target password may be requested once to install your public key.')
+  cp=subprocess.run(['ssh-copy-id','-p',str(t.get('port',22)),'-i',str(key)+'.pub',f"{t['user']}@{t['host']}"])
+  if cp.returncode:return False
+ r=remote(t,"printf '%s' READY");mark(r['exit_code']==0,'Non-interactive SSH',(r['stdout']+r['stderr']).strip())
+ if r['exit_code']:return False
+ print('\nConfiguring restricted passwordless sudo. The target password may be requested once.')
+ user=t['user'];rule=f"{user} ALL=(root) NOPASSWD: /usr/bin/apt-get, /usr/bin/systemctl, /usr/sbin/usermod, /usr/bin/docker\n"
+ cmd="sudo sh -c "+shlex.quote("printf %s "+shlex.quote(rule)+" > /etc/sudoers.d/research-claw && chmod 440 /etc/sudoers.d/research-claw && visudo -cf /etc/sudoers.d/research-claw")
+ rc=subprocess.run(ssh_base(t,batch=False)+['-tt',cmd]).returncode
+ return rc==0
+def preflight(c):
+ t=c['target'];checks=[]
+ key=Path(t['identity_file']).expanduser(); checks.append(('SSH private key',key.is_file(),str(key)))
+ try:socket.create_connection((t['host'],t['port']),8).close();checks.append(('Target TCP',True,f"{t['host']}:{t['port']}"))
+ except Exception as e:checks.append(('Target TCP',False,str(e)))
+ r=remote(t,"printf '%s' READY");checks.append(('Non-interactive SSH',r['exit_code']==0,(r['stdout']+r['stderr']).strip()))
+ r=remote(t,"uname -srm; nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader");checks.append(('Target and GPU',r['exit_code']==0,(r['stdout']+r['stderr']).strip()))
+ sudo="sudo -n /usr/bin/apt-get --version >/dev/null && sudo -n /usr/bin/systemctl --version >/dev/null && sudo -n /usr/sbin/usermod --help >/dev/null"
+ r=remote(t,sudo);checks.append(('Autonomous sudo',r['exit_code']==0,(r['stdout']+r['stderr']).strip() or 'ready'))
+ try:
+  data=json.load(urlopen(c['inference']['base_url'].rstrip('/')+'/api/tags',timeout=10));names=[x.get('name','') for x in data.get('models',[])];checks.append(('Ollama API',True,c['inference']['base_url']));checks.append(('Ollama model',c['inference']['model'] in names,f"wanted={c['inference']['model']}; available={', '.join(names)}"))
+ except Exception as e:checks.append(('Ollama API',False,str(e)))
+ for n,ok,d in checks:mark(ok,n,d)
+ return all(x[1] for x in checks)
+def deploy(c,resume=False):
+ slug=c['project'].replace(' ','_');statef=ROOT/'state'/f'{slug}.json';logf=ROOT/'logs'/f'{slug}.jsonl';reportf=ROOT/'reports'/f'{slug}.md'
+ state=json.loads(statef.read_text()) if resume and statef.exists() else {'status':'running','completed':[],'failed':None}
+ for rec in recipes(c):
+  name=rec['name']
+  if name in state['completed']:continue
+  print(f"\n=== {name}: {rec.get('description','')} ===")
+  for kind in ('precheck','commands','verify'):
+   for raw in rec.get(kind,[]):
+    cmd=raw.replace('{{ workspace }}',c['deployment']['workspace']);print(f"[{kind}] {cmd}")
+    res=remote(c['target'],cmd,timeout=int(rec.get('timeout_seconds',1800)))
+    with logf.open('a') as f:f.write(json.dumps({'phase':name,'kind':kind,**res})+'\n')
+    if res['stdout']:print(res['stdout'],end='')
+    if res['stderr']:print(res['stderr'],end='',file=sys.stderr)
+    if res['exit_code']:
+     state.update(status='failed',failed={'phase':name,'command':cmd,'exit_code':res['exit_code']});statef.write_text(json.dumps(state,indent=2));reportf.write_text(f"# Deployment report\n\nStatus: failed\n\nPhase: {name}\n\nLog: {logf}\n");return False
+  state['completed'].append(name);statef.write_text(json.dumps(state,indent=2))
+ state.update(status='completed',failed=None);statef.write_text(json.dumps(state,indent=2));reportf.write_text(f"# Deployment report\n\nStatus: completed\n\nCompleted: {', '.join(state['completed'])}\n\nLog: {logf}\n");return True
 def main():
-    ap=argparse.ArgumentParser(prog='research-claw'); sub=ap.add_subparsers(dest='cmd')
-    x=sub.add_parser('init'); x.add_argument('inventory')
-    for name in ('preflight','plan','status'):
-        x=sub.add_parser(name); x.add_argument('inventory')
-    for name in ('deploy','resume'):
-        x=sub.add_parser(name); x.add_argument('inventory'); x.add_argument('--yes',action='store_true')
-    a=ap.parse_args()
-    try:
-        if not a.cmd: return wizard()
-        if a.cmd=='init': return init_inventory(a.inventory)
-        if a.cmd=='preflight': return command_preflight(a.inventory)
-        _,cfg=load_inventory(a.inventory); r=Runner(a.inventory,cfg)
-        if a.cmd=='plan': show_plan(r); return 0
-        if a.cmd=='status': print(r.state.read_text() if r.state.exists() else 'No deployment state yet.'); return 0
-        return do_deploy(a.inventory,a.cmd=='resume',a.yes)
-    except KeyboardInterrupt: print('\nCancelled.'); return 130
-    except Exception as e: print(c(f'Error: {e}',RED),file=sys.stderr); return 1
-if __name__=='__main__': raise SystemExit(main())
+ print('Research Claw One-Click Deployer')
+ c=load(INV) if INV.exists() and ask('Use existing inventory?','Y').lower().startswith('y') else make_inventory()
+ if not setup_access(c):print('SSH or sudo setup failed. Fix the displayed target-side error and run ./run.sh again.');return 2
+ print('\nPreflight checklist:')
+ if not preflight(c):print('\nPreflight failed. Nothing was installed.');return 2
+ print('\nDeployment plan:');[print(f" [ ] {x['name']} - {x.get('description','')}") for x in recipes(c)]
+ if ask('Start deployment now? Type DEPLOY')!='DEPLOY':print('Stopped before installation.');return 0
+ ok=deploy(c);print('\nDeployment completed.' if ok else '\nDeployment stopped. Run ./run.sh and choose the existing inventory after fixing the logged error.');return 0 if ok else 3
+if __name__=='__main__':raise SystemExit(main())

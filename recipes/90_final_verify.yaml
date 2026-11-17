@@ -1,8 +1,5 @@
 name: final_verification
-description: Validate the final environment.
-commands:
-  - >-
-    {{ workspace }}/.venv/bin/python -c "import torch, sionna; print('GPU:', torch.cuda.get_device_name(0)); print('READY')"
+description: Validate final research environment.
 verify:
   - sudo -n docker info >/dev/null
-  - test -x {{ workspace }}/.venv/bin/python
+  - '{{ workspace }}/.venv/bin/python -c "import torch, sionna; assert torch.cuda.is_available(); print("READY")"'

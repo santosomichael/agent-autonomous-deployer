@@ -1,15 +1,9 @@
 .venv/
 __pycache__/
-*.pyc
-inventory/*.yaml
-!inventory/examples/
+*.egg-info/
+inventory/target.yaml
 logs/*
-!logs/.gitkeep
 reports/*
-!reports/.gitkeep
 state/*
-!state/.gitkeep
-*.pem
 *.key
 id_*
-.env

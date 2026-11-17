@@ -1,8 +1,6 @@
 name: docker
-description: Install Docker from Ubuntu packages and enable the service.
-timeout_seconds: 1800
+description: Enable and validate Docker.
 commands:
-  - sudo -n DEBIAN_FRONTEND=noninteractive apt-get install -y docker.io
   - sudo -n systemctl enable --now docker
   - sudo -n usermod -aG docker $(id -un)
 verify:

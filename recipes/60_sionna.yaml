@@ -1,8 +1,7 @@
 name: sionna
-description: Install Sionna into the isolated environment.
+description: Install and import Sionna.
 timeout_seconds: 1800
 commands:
-  - "{{ workspace }}/.venv/bin/pip install sionna"
+  - '{{ workspace }}/.venv/bin/pip install sionna'
 verify:
-  - >-
-    {{ workspace }}/.venv/bin/python -c "import sionna; print('Sionna import OK')"
+  - '{{ workspace }}/.venv/bin/python -c "import sionna; print("Sionna OK")"'
